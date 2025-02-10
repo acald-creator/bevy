@@ -5,8 +5,12 @@ use crate::{
     ViewScreenSpaceReflectionsUniformOffset, TONEMAPPING_LUT_SAMPLER_BINDING_INDEX,
     TONEMAPPING_LUT_TEXTURE_BINDING_INDEX,
 };
+use crate::{
+    DistanceFog, MeshPipelineKey, ShadowFilteringMethod, ViewFogUniformOffset,
+    ViewLightsUniformOffset,
+};
 use bevy_app::prelude::*;
-use bevy_asset::{load_internal_asset, Handle};
+use bevy_asset::{load_internal_asset, weak_handle, Handle};
 use bevy_core_pipeline::{
     core_3d::graph::{Core3d, Node3d},
     deferred::{
@@ -16,6 +20,7 @@ use bevy_core_pipeline::{
     tonemapping::{DebandDither, Tonemapping},
 };
 use bevy_ecs::{prelude::*, query::QueryItem};
+use bevy_image::BevyDefault as _;
 use bevy_render::{
     extract_component::{
         ComponentUniforms, ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin,
@@ -23,19 +28,14 @@ use bevy_render::{
     render_graph::{NodeRunError, RenderGraphApp, RenderGraphContext, ViewNode, ViewNodeRunner},
     render_resource::{binding_types::uniform_buffer, *},
     renderer::{RenderContext, RenderDevice},
-    texture::BevyDefault,
     view::{ExtractedView, ViewTarget, ViewUniformOffset},
     Render, RenderApp, RenderSet,
-};
-
-use crate::{
-    MeshPipelineKey, ShadowFilteringMethod, ViewFogUniformOffset, ViewLightsUniformOffset,
 };
 
 pub struct DeferredPbrLightingPlugin;
 
 pub const DEFERRED_LIGHTING_SHADER_HANDLE: Handle<Shader> =
-    Handle::weak_from_u128(2708011359337029741);
+    weak_handle!("f4295279-8890-4748-b654-ca4d2183df1c");
 
 pub const DEFAULT_PBR_DEFERRED_LIGHTING_PASS_ID: u8 = 1;
 
@@ -329,6 +329,10 @@ impl SpecializedRenderPipeline for DeferredLightingLayout {
             shader_defs.push("HAS_PREVIOUS_MORPH".into());
         }
 
+        if key.contains(MeshPipelineKey::DISTANCE_FOG) {
+            shader_defs.push("DISTANCE_FOG".into());
+        }
+
         // Always true, since we're in the deferred lighting pipeline
         shader_defs.push("DEFERRED_PREPASS".into());
 
@@ -390,6 +394,7 @@ impl SpecializedRenderPipeline for DeferredLightingLayout {
             }),
             multisample: MultisampleState::default(),
             push_constant_ranges: vec![],
+            zero_initialize_workgroup_memory: false,
         }
     }
 }
@@ -437,6 +442,7 @@ pub fn prepare_deferred_lighting_pipelines(
             (
                 Has<ScreenSpaceAmbientOcclusion>,
                 Has<ScreenSpaceReflectionsUniform>,
+                Has<DistanceFog>,
             ),
             (
                 Has<NormalPrepass>,
@@ -455,7 +461,7 @@ pub fn prepare_deferred_lighting_pipelines(
         tonemapping,
         dither,
         shadow_filter_method,
-        (ssao, ssr),
+        (ssao, ssr, distance_fog),
         (normal_prepass, depth_prepass, motion_vector_prepass),
         has_environment_maps,
         has_irradiance_volumes,
@@ -506,6 +512,9 @@ pub fn prepare_deferred_lighting_pipelines(
         }
         if ssr {
             view_key |= MeshPipelineKey::SCREEN_SPACE_REFLECTIONS;
+        }
+        if distance_fog {
+            view_key |= MeshPipelineKey::DISTANCE_FOG;
         }
 
         // We don't need to check to see whether the environment map is loaded
