@@ -1,10 +1,12 @@
-#[cfg(debug_assertions)]
-use bevy_utils::warn_once;
+//! [DirectDraw Surface](https://en.wikipedia.org/wiki/DirectDraw_Surface) functionality.
+
 use ddsfile::{Caps2, D3DFormat, Dds, DxgiFormat};
 use std::io::Cursor;
-use wgpu::{
+use wgpu_types::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
+#[cfg(debug_assertions)]
+use {bevy_utils::once, tracing::warn};
 
 use super::{CompressedImageFormats, Image, TextureError};
 
@@ -16,7 +18,8 @@ pub fn dds_buffer_to_image(
     is_srgb: bool,
 ) -> Result<Image, TextureError> {
     let mut cursor = Cursor::new(buffer);
-    let dds = Dds::read(&mut cursor).expect("Failed to parse DDS file");
+    let dds = Dds::read(&mut cursor)
+        .map_err(|error| TextureError::InvalidData(format!("Failed to parse DDS file: {error}")))?;
     let texture_format = dds_format_to_texture_format(&dds, is_srgb)?;
     if !supported_compressed_formats.supports(texture_format) {
         return Err(TextureError::UnsupportedTextureFormat(format!(
@@ -51,10 +54,10 @@ pub fn dds_buffer_to_image(
     let mip_map_level = match dds.get_num_mipmap_levels() {
         0 => {
             #[cfg(debug_assertions)]
-            warn_once!(
+            once!(warn!(
                 "Mipmap levels for texture {} are 0, bumping them to 1",
                 name
-            );
+            ));
             1
         }
         t => t,
@@ -79,7 +82,7 @@ pub fn dds_buffer_to_image(
             ..Default::default()
         });
     }
-    image.data = dds.data;
+    image.data = Some(dds.data);
     Ok(image)
 }
 
@@ -182,7 +185,7 @@ pub fn dds_format_to_texture_format(
             DxgiFormat::R10G10B10A2_Typeless | DxgiFormat::R10G10B10A2_UNorm => {
                 TextureFormat::Rgb10a2Unorm
             }
-            DxgiFormat::R11G11B10_Float => TextureFormat::Rg11b10Float,
+            DxgiFormat::R11G11B10_Float => TextureFormat::Rg11b10Ufloat,
             DxgiFormat::R8G8B8A8_Typeless
             | DxgiFormat::R8G8B8A8_UNorm
             | DxgiFormat::R8G8B8A8_UNorm_sRGB => {
@@ -281,14 +284,17 @@ pub fn dds_format_to_texture_format(
 
 #[cfg(test)]
 mod test {
-    use wgpu::{util::TextureDataOrder, TextureDescriptor, TextureDimension};
+    use wgpu_types::{TextureDataOrder, TextureDescriptor, TextureDimension, TextureFormat};
 
     use crate::CompressedImageFormats;
 
     use super::dds_buffer_to_image;
 
     /// `wgpu::create_texture_with_data` that reads from data structure but doesn't actually talk to your GPU
-    fn fake_wgpu_create_texture_with_data(desc: &TextureDescriptor<'_>, data: &[u8]) {
+    fn fake_wgpu_create_texture_with_data(
+        desc: &TextureDescriptor<Option<&'_ str>, &'_ [TextureFormat]>,
+        data: &[u8],
+    ) {
         // Will return None only if it's a combined depth-stencil format
         // If so, default to 4, validation will fail later anyway since the depth or stencil
         // aspect needs to be written to individually
@@ -367,7 +373,7 @@ mod test {
         let r = dds_buffer_to_image("".into(), &buffer, CompressedImageFormats::BC, true);
         assert!(r.is_ok());
         if let Ok(r) = r {
-            fake_wgpu_create_texture_with_data(&r.texture_descriptor, &r.data);
+            fake_wgpu_create_texture_with_data(&r.texture_descriptor, r.data.as_ref().unwrap());
         }
     }
 }
